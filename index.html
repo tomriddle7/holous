@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Phaser P2P 대기실 (조이스틱 수정판)</title>
+    <title>Phaser P2P 대기실 (버그 수정판)</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.80.1/phaser.min.js"></script>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
@@ -19,9 +19,7 @@
             font-family: 'Malgun Gothic', sans-serif;
             overflow: hidden;
             touch-action: none;
-            /* 모바일에서 드래그 시 새로고침/스크롤 방지 */
             -webkit-user-select: none;
-            /* 텍스트 선택 방지 */
             user-select: none;
         }
 
@@ -105,7 +103,7 @@
     <div id="ui-layer">
         <div class="panel" id="menu-panel">
             <h2>우주선 대기실 접속</h2>
-            <p>조이스틱 UI가 완벽하게 분리된 버전입니다.</p>
+            <p>블랙스크린 버그가 해결된 버전입니다.</p>
             <button onclick="startAsHost()">방 만들기 (방장)</button>
             <br>
             <hr style="border-color:#444; margin:20px 0;">
@@ -139,7 +137,6 @@
             { name: 'white', hex: 0xd6e0f0 }, { name: 'black', hex: 0x3f474e }
         ];
 
-        // 1. 방장(Host) 및 참여자(Client) 로직 (이전과 동일)
         function startAsHost() {
             document.getElementById('menu-panel').classList.add('hidden');
             document.getElementById('loading-panel').classList.remove('hidden');
@@ -214,24 +211,17 @@
             peer.on('error', (err) => { alert('접속 에러. 코드를 확인해주세요. (' + err.type + ')'); location.reload(); });
         }
 
-        // ==========================================
-        // UI 전용 레이어 씬 (카메라 확대 무시, 항상 제자리 고정)
-        // ==========================================
         class UIScene extends Phaser.Scene {
             constructor() { super({ key: 'UIScene' }); }
 
             create() {
                 this.joystick = { inUse: false, forceX: 0, forceY: 0, pointerId: null };
-                this.input.addPointer(2); // 멀티터치 지원
+                this.input.addPointer(2);
 
-                // 조이스틱 그래픽 생성
                 this.joyBase = this.add.circle(0, 0, 60, 0x555555, 0.5);
                 this.joyThumb = this.add.circle(0, 0, 30, 0xaaaaaa, 0.8);
-
-                // 넉넉한 터치 감지 영역
                 this.joyArea = this.add.circle(0, 0, 100, 0x000000, 0).setInteractive();
 
-                // 터치 이벤트 로직
                 this.joyArea.on('pointerdown', (pointer) => {
                     this.joystick.inUse = true;
                     this.joystick.pointerId = pointer.id;
@@ -255,7 +245,6 @@
                     }
                 });
 
-                // 브라우저 크기가 바뀔 때 조이스틱 위치 재계산
                 this.scale.on('resize', this.resize, this);
                 this.resize(this.scale.gameSize);
             }
@@ -279,10 +268,9 @@
                 this.joystick.forceY = Math.sin(angle) * (distance / maxRadius);
             }
 
-            // 좌측 하단에 딱 맞게 고정시키는 함수
             resize(gameSize) {
                 const nx = 120;
-                const ny = gameSize.height - 120; // 화면 높이에서 120 픽셀 위로
+                const ny = gameSize.height - 120;
                 this.joyBase.setPosition(nx, ny);
                 this.joyArea.setPosition(nx, ny);
                 if (!this.joystick.inUse) {
@@ -291,9 +279,6 @@
             }
         }
 
-        // ==========================================
-        // 메인 게임 레이어 씬
-        // ==========================================
         class LobbyScene extends Phaser.Scene {
             constructor() { super({ key: 'LobbyScene' }); }
 
@@ -303,9 +288,8 @@
             }
 
             create() {
-                document.getElementById('game-container').style.display = 'block';
+                // 주의: 여기서 컨테이너를 보이게 하는 코드를 삭제했습니다! (startGame 함수로 이동)
 
-                // UI 씬(레이어)을 메인 게임 위에 투명하게 띄웁니다.
                 this.scene.launch('UIScene');
 
                 this.playerSpeed = 200;
@@ -337,7 +321,7 @@
 
                 this.cameras.main.setBounds(0, 0, 1200, 800);
                 this.cameras.main.startFollow(this.player, true, 0.05, 0.05);
-                this.cameras.main.setZoom(1.2); // 이 줌 효과가 UI 레이어에는 적용되지 않게 됩니다!
+                this.cameras.main.setZoom(1.2);
 
                 this.cursors = this.input.keyboard.createCursorKeys();
                 this.wasd = this.input.keyboard.addKeys({
@@ -396,23 +380,19 @@
                 let velX = 0;
                 let velY = 0;
 
-                // 1. 키보드 입력 체크
                 if (this.cursors.left.isDown || this.wasd.A.isDown) velX = -1;
                 else if (this.cursors.right.isDown || this.wasd.D.isDown) velX = 1;
                 if (this.cursors.up.isDown || this.wasd.W.isDown) velY = -1;
                 else if (this.cursors.down.isDown || this.wasd.S.isDown) velY = 1;
 
-                // 2. 분리된 UIScene에서 조이스틱 데이터 가져오기
                 const uiScene = this.scene.get('UIScene');
                 if (uiScene && uiScene.joystick && uiScene.joystick.inUse) {
                     velX = uiScene.joystick.forceX;
                     velY = uiScene.joystick.forceY;
                 }
 
-                // 3. 이동 적용
                 if (velX !== 0 || velY !== 0) {
                     isMoving = true;
-                    // 조이스틱이 아닐 때만 대각선 정규화 (조이스틱은 이미 정규화되어 있음)
                     if (!uiScene || !uiScene.joystick.inUse) {
                         const magnitude = Math.sqrt(velX * velX + velY * velY);
                         if (magnitude > 1) { velX /= magnitude; velY /= magnitude; }
@@ -446,7 +426,6 @@
                 }
             }
 
-            // 그래픽 생성 함수들
             createFloorTexture() {
                 const bgGraphics = this.make.graphics({ x: 0, y: 0, add: false });
                 bgGraphics.fillStyle(0x333344, 1); bgGraphics.fillRect(0, 0, 64, 64);
@@ -468,14 +447,16 @@
             }
         }
 
-        // 게임 부팅 설정 (두 씬 모두 포함)
+        // 핵심 수정 부분: Phaser 게임을 시작하기 전에 컨테이너를 먼저 노출시킵니다!
         function startGame() {
+            document.getElementById('game-container').style.display = 'block';
+
             const config = {
                 type: Phaser.AUTO,
                 scale: { mode: Phaser.Scale.RESIZE, parent: 'game-container', width: '100%', height: '100%' },
                 backgroundColor: '#111111',
                 physics: { default: 'arcade', arcade: { gravity: { y: 0 } } },
-                scene: [LobbyScene, UIScene], // 씬을 배열로 등록
+                scene: [LobbyScene, UIScene],
                 pixelArt: false
             };
             new Phaser.Game(config);
