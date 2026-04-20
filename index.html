@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Phaser P2P 대기실 (조이스틱 수정판)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.80.1/phaser.min.js"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #111;
+            color: white;
+            font-family: 'Malgun Gothic', sans-serif;
+            overflow: hidden;
+            touch-action: none;
+            /* 모바일에서 드래그 시 새로고침/스크롤 방지 */
+            -webkit-user-select: none;
+            /* 텍스트 선택 방지 */
+            user-select: none;
+        }
+
+        #game-container {
+            width: 100%;
+            height: 100%;
+            display: none;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: rgba(0, 0, 0, 0.85);
+            z-index: 10;
+        }
+
+        .panel {
+            background: #222;
+            padding: 30px;
+            border-radius: 15px;
+            text-align: center;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+            border: 2px solid #555;
+            margin-bottom: 20px;
+        }
+
+        button {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            font-size: 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            margin: 10px;
+            font-weight: bold;
+        }
+
+        button:hover {
+            background: #2980b9;
+        }
+
+        input {
+            padding: 12px;
+            font-size: 16px;
+            border-radius: 8px;
+            border: 1px solid #ccc;
+            text-align: center;
+            width: 200px;
+            text-transform: uppercase;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        #room-info {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px 20px;
+            border-radius: 20px;
+            z-index: 5;
+            font-size: 18px;
+            font-weight: bold;
+            border: 1px solid #555;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="ui-layer">
+        <div class="panel" id="menu-panel">
+            <h2>우주선 대기실 접속</h2>
+            <p>조이스틱 UI가 완벽하게 분리된 버전입니다.</p>
+            <button onclick="startAsHost()">방 만들기 (방장)</button>
+            <br>
+            <hr style="border-color:#444; margin:20px 0;">
+            <input type="text" id="join-code" placeholder="참여 코드 입력">
+            <br>
+            <button onclick="joinAsClient()" style="background:#e67e22;">방 접속하기</button>
+        </div>
+        <div class="panel hidden" id="loading-panel">
+            <h2 id="loading-text">처리 중...</h2>
+        </div>
+    </div>
+
+    <div id="room-info" class="hidden"></div>
+    <div id="game-container"></div>
+
+    <script>
+        let peer = null;
+        let isHost = false;
+        let myId = '';
+
+        let hostConnections = [];
+        let globalPlayersData = {};
+        let hostConn = null;
+
+        const networkEvents = new EventTarget();
+
+        const COLORS = [
+            { name: 'red', hex: 0xd72b2b }, { name: 'blue', hex: 0x132ed1 },
+            { name: 'green', hex: 0x117f2d }, { name: 'yellow', hex: 0xf6f657 },
+            { name: 'orange', hex: 0xeb7d0b }, { name: 'pink', hex: 0xef3eab },
+            { name: 'white', hex: 0xd6e0f0 }, { name: 'black', hex: 0x3f474e }
+        ];
+
+        // 1. 방장(Host) 및 참여자(Client) 로직 (이전과 동일)
+        function startAsHost() {
+            document.getElementById('menu-panel').classList.add('hidden');
+            document.getElementById('loading-panel').classList.remove('hidden');
+            document.getElementById('loading-text').innerText = "방 생성 중...";
+            isHost = true;
+            const roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
+            peer = new Peer(roomId);
+            peer.on('open', (id) => {
+                myId = id;
+                document.getElementById('ui-layer').classList.add('hidden');
+                document.getElementById('room-info').classList.remove('hidden');
+                document.getElementById('room-info').innerText = `[방장] 참여 코드: ${id}`;
+                startGame();
+            });
+            peer.on('connection', (conn) => {
+                hostConnections.push(conn);
+                conn.on('data', (data) => {
+                    if (data.type === 'INIT') {
+                        globalPlayersData[data.id] = data.playerInfo;
+                        broadcastToOthers(conn.peer, { type: 'JOIN', id: data.id, playerInfo: data.playerInfo });
+                        conn.send({ type: 'SYNC', playersData: globalPlayersData });
+                        networkEvents.dispatchEvent(new CustomEvent('playerJoined', { detail: { id: data.id, info: data.playerInfo } }));
+                    } else if (data.type === 'MOVE') {
+                        globalPlayersData[data.id] = data.playerInfo;
+                        broadcastToOthers(conn.peer, { type: 'MOVE', id: data.id, playerInfo: data.playerInfo });
+                        networkEvents.dispatchEvent(new CustomEvent('playerMoved', { detail: { id: data.id, info: data.playerInfo } }));
+                    }
+                });
+                conn.on('close', () => {
+                    hostConnections = hostConnections.filter(c => c.peer !== conn.peer);
+                    delete globalPlayersData[conn.peer];
+                    broadcast({ type: 'LEAVE', id: conn.peer });
+                    networkEvents.dispatchEvent(new CustomEvent('playerLeft', { detail: { id: conn.peer } }));
+                });
+            });
+            peer.on('error', (err) => { alert('방 생성 에러: ' + err.type); location.reload(); });
+        }
+
+        function broadcast(data) { hostConnections.forEach(conn => { if (conn.open) conn.send(data); }); }
+        function broadcastToOthers(excludePeerId, data) {
+            hostConnections.forEach(conn => { if (conn.open && conn.peer !== excludePeerId) conn.send(data); });
+        }
+
+        function joinAsClient() {
+            const code = document.getElementById('join-code').value.trim().toUpperCase();
+            if (!code) { alert("참여 코드를 입력해주세요!"); return; }
+            document.getElementById('menu-panel').classList.add('hidden');
+            document.getElementById('loading-panel').classList.remove('hidden');
+            document.getElementById('loading-text').innerText = "방 접속 중...";
+            isHost = false;
+            peer = new Peer();
+            peer.on('open', (id) => {
+                myId = id;
+                hostConn = peer.connect(code);
+                hostConn.on('open', () => {
+                    document.getElementById('ui-layer').classList.add('hidden');
+                    document.getElementById('room-info').classList.remove('hidden');
+                    document.getElementById('room-info').innerText = `[접속됨] 참여 코드: ${code}`;
+                    startGame();
+                });
+                hostConn.on('data', (data) => {
+                    if (data.type === 'SYNC') {
+                        for (let pid in data.playersData) {
+                            if (pid !== myId) networkEvents.dispatchEvent(new CustomEvent('playerJoined', { detail: { id: pid, info: data.playersData[pid] } }));
+                        }
+                    } else if (data.type === 'JOIN') networkEvents.dispatchEvent(new CustomEvent('playerJoined', { detail: { id: data.id, info: data.playerInfo } }));
+                    else if (data.type === 'MOVE') networkEvents.dispatchEvent(new CustomEvent('playerMoved', { detail: { id: data.id, info: data.playerInfo } }));
+                    else if (data.type === 'LEAVE') networkEvents.dispatchEvent(new CustomEvent('playerLeft', { detail: { id: data.id } }));
+                });
+                hostConn.on('close', () => { alert("방장과의 연결이 끊어졌습니다."); location.reload(); });
+            });
+            peer.on('error', (err) => { alert('접속 에러. 코드를 확인해주세요. (' + err.type + ')'); location.reload(); });
+        }
+
+        // ==========================================
+        // UI 전용 레이어 씬 (카메라 확대 무시, 항상 제자리 고정)
+        // ==========================================
+        class UIScene extends Phaser.Scene {
+            constructor() { super({ key: 'UIScene' }); }
+
+            create() {
+                this.joystick = { inUse: false, forceX: 0, forceY: 0, pointerId: null };
+                this.input.addPointer(2); // 멀티터치 지원
+
+                // 조이스틱 그래픽 생성
+                this.joyBase = this.add.circle(0, 0, 60, 0x555555, 0.5);
+                this.joyThumb = this.add.circle(0, 0, 30, 0xaaaaaa, 0.8);
+
+                // 넉넉한 터치 감지 영역
+                this.joyArea = this.add.circle(0, 0, 100, 0x000000, 0).setInteractive();
+
+                // 터치 이벤트 로직
+                this.joyArea.on('pointerdown', (pointer) => {
+                    this.joystick.inUse = true;
+                    this.joystick.pointerId = pointer.id;
+                    this.updateJoystick(pointer);
+                });
+
+                this.input.on('pointermove', (pointer) => {
+                    if (this.joystick.inUse && pointer.id === this.joystick.pointerId) {
+                        this.updateJoystick(pointer);
+                    }
+                });
+
+                this.input.on('pointerup', (pointer) => {
+                    if (this.joystick.inUse && pointer.id === this.joystick.pointerId) {
+                        this.joystick.inUse = false;
+                        this.joystick.pointerId = null;
+                        this.joystick.forceX = 0;
+                        this.joystick.forceY = 0;
+                        this.joyThumb.setPosition(this.joyBase.x, this.joyBase.y);
+                        this.joyThumb.setFillStyle(0xaaaaaa, 0.8);
+                    }
+                });
+
+                // 브라우저 크기가 바뀔 때 조이스틱 위치 재계산
+                this.scale.on('resize', this.resize, this);
+                this.resize(this.scale.gameSize);
+            }
+
+            updateJoystick(pointer) {
+                const maxRadius = 60;
+                let dx = pointer.x - this.joyBase.x;
+                let dy = pointer.y - this.joyBase.y;
+                let distance = Math.sqrt(dx * dx + dy * dy);
+                let angle = Math.atan2(dy, dx);
+
+                if (distance > maxRadius) distance = maxRadius;
+
+                this.joyThumb.setPosition(
+                    this.joyBase.x + Math.cos(angle) * distance,
+                    this.joyBase.y + Math.sin(angle) * distance
+                );
+                this.joyThumb.setFillStyle(0xffffff, 0.9);
+
+                this.joystick.forceX = Math.cos(angle) * (distance / maxRadius);
+                this.joystick.forceY = Math.sin(angle) * (distance / maxRadius);
+            }
+
+            // 좌측 하단에 딱 맞게 고정시키는 함수
+            resize(gameSize) {
+                const nx = 120;
+                const ny = gameSize.height - 120; // 화면 높이에서 120 픽셀 위로
+                this.joyBase.setPosition(nx, ny);
+                this.joyArea.setPosition(nx, ny);
+                if (!this.joystick.inUse) {
+                    this.joyThumb.setPosition(nx, ny);
+                }
+            }
+        }
+
+        // ==========================================
+        // 메인 게임 레이어 씬
+        // ==========================================
+        class LobbyScene extends Phaser.Scene {
+            constructor() { super({ key: 'LobbyScene' }); }
+
+            preload() {
+                this.createFloorTexture();
+                COLORS.forEach(c => this.createCrewmateTexture('crewmate_' + c.name, c.hex));
+            }
+
+            create() {
+                document.getElementById('game-container').style.display = 'block';
+
+                // UI 씬(레이어)을 메인 게임 위에 투명하게 띄웁니다.
+                this.scene.launch('UIScene');
+
+                this.playerSpeed = 200;
+                this.otherPlayers = {};
+                this.lastSyncTime = 0;
+
+                this.physics.world.setBounds(0, 0, 1200, 800);
+                this.add.tileSprite(0, 0, 1200, 800, 'floor').setOrigin(0, 0);
+
+                const graphics = this.add.graphics();
+                graphics.lineStyle(8, 0x555555, 1);
+                graphics.strokeRect(0, 0, 1200, 800);
+
+                const myColorObj = COLORS[Math.floor(Math.random() * COLORS.length)];
+                this.myColor = myColorObj.name;
+                const startX = 400 + Math.random() * 400;
+                const startY = 300 + Math.random() * 200;
+
+                this.player = this.physics.add.sprite(startX, startY, 'crewmate_' + this.myColor).setScale(0.8);
+                this.player.setCollideWorldBounds(true);
+                this.player.body.setSize(40, 30);
+                this.player.body.setOffset(10, 30);
+
+                const shortId = myId.substring(0, 4);
+                this.playerNameText = this.add.text(startX, startY - 45, '나 (' + shortId + ')', {
+                    fontSize: '14px', fontFamily: 'sans-serif', color: '#ffffff',
+                    backgroundColor: 'rgba(0,0,0,0.5)', padding: { x: 4, y: 2 }
+                }).setOrigin(0.5);
+
+                this.cameras.main.setBounds(0, 0, 1200, 800);
+                this.cameras.main.startFollow(this.player, true, 0.05, 0.05);
+                this.cameras.main.setZoom(1.2); // 이 줌 효과가 UI 레이어에는 적용되지 않게 됩니다!
+
+                this.cursors = this.input.keyboard.createCursorKeys();
+                this.wasd = this.input.keyboard.addKeys({
+                    W: Phaser.Input.Keyboard.KeyCodes.W, S: Phaser.Input.Keyboard.KeyCodes.S,
+                    A: Phaser.Input.Keyboard.KeyCodes.A, D: Phaser.Input.Keyboard.KeyCodes.D
+                });
+
+                this.sendNetworkData('INIT');
+                networkEvents.addEventListener('playerJoined', (e) => this.addOtherPlayer(e.detail.id, e.detail.info));
+                networkEvents.addEventListener('playerMoved', (e) => this.updateOtherPlayer(e.detail.id, e.detail.info));
+                networkEvents.addEventListener('playerLeft', (e) => this.removeOtherPlayer(e.detail.id));
+            }
+
+            sendNetworkData(type) {
+                const myData = { x: Math.round(this.player.x), y: Math.round(this.player.y), color: this.myColor, flipX: this.player.flipX };
+                if (isHost) {
+                    globalPlayersData[myId] = myData;
+                    if (type === 'MOVE') broadcast({ type: 'MOVE', id: myId, playerInfo: myData });
+                } else {
+                    if (hostConn && hostConn.open) hostConn.send({ type: type, id: myId, playerInfo: myData });
+                }
+            }
+
+            addOtherPlayer(id, info) {
+                if (this.otherPlayers[id]) return;
+                const sprite = this.add.sprite(info.x, info.y, 'crewmate_' + info.color).setScale(0.8);
+                sprite.setFlipX(info.flipX);
+                const text = this.add.text(info.x, info.y - 45, '유저-' + id.substring(0, 4), {
+                    fontSize: '14px', fontFamily: 'sans-serif', color: '#ffffff',
+                    backgroundColor: 'rgba(0,0,0,0.5)', padding: { x: 4, y: 2 }
+                }).setOrigin(0.5);
+                this.otherPlayers[id] = { sprite: sprite, text: text, targetX: info.x, targetY: info.y };
+            }
+
+            updateOtherPlayer(id, info) {
+                const other = this.otherPlayers[id];
+                if (other) {
+                    other.targetX = info.x;
+                    other.targetY = info.y;
+                    other.sprite.setFlipX(info.flipX);
+                } else this.addOtherPlayer(id, info);
+            }
+
+            removeOtherPlayer(id) {
+                const other = this.otherPlayers[id];
+                if (other) {
+                    other.sprite.destroy();
+                    other.text.destroy();
+                    delete this.otherPlayers[id];
+                }
+            }
+
+            update() {
+                this.player.setVelocity(0);
+                let isMoving = false;
+                let velX = 0;
+                let velY = 0;
+
+                // 1. 키보드 입력 체크
+                if (this.cursors.left.isDown || this.wasd.A.isDown) velX = -1;
+                else if (this.cursors.right.isDown || this.wasd.D.isDown) velX = 1;
+                if (this.cursors.up.isDown || this.wasd.W.isDown) velY = -1;
+                else if (this.cursors.down.isDown || this.wasd.S.isDown) velY = 1;
+
+                // 2. 분리된 UIScene에서 조이스틱 데이터 가져오기
+                const uiScene = this.scene.get('UIScene');
+                if (uiScene && uiScene.joystick && uiScene.joystick.inUse) {
+                    velX = uiScene.joystick.forceX;
+                    velY = uiScene.joystick.forceY;
+                }
+
+                // 3. 이동 적용
+                if (velX !== 0 || velY !== 0) {
+                    isMoving = true;
+                    // 조이스틱이 아닐 때만 대각선 정규화 (조이스틱은 이미 정규화되어 있음)
+                    if (!uiScene || !uiScene.joystick.inUse) {
+                        const magnitude = Math.sqrt(velX * velX + velY * velY);
+                        if (magnitude > 1) { velX /= magnitude; velY /= magnitude; }
+                    }
+
+                    this.player.setVelocityX(velX * this.playerSpeed);
+                    this.player.setVelocityY(velY * this.playerSpeed);
+
+                    if (velX < -0.1) this.player.setFlipX(true);
+                    else if (velX > 0.1) this.player.setFlipX(false);
+
+                    this.player.y += Math.sin(this.time.now / 50) * 0.5;
+                }
+
+                this.playerNameText.setPosition(this.player.x, this.player.y - 45);
+
+                const now = this.time.now;
+                if (isMoving && (now - this.lastSyncTime > 50)) {
+                    this.sendNetworkData('MOVE');
+                    this.lastSyncTime = now;
+                }
+
+                for (const id in this.otherPlayers) {
+                    const other = this.otherPlayers[id];
+                    other.sprite.x = Phaser.Math.Linear(other.sprite.x, other.targetX, 0.3);
+                    other.sprite.y = Phaser.Math.Linear(other.sprite.y, other.targetY, 0.3);
+                    other.text.setPosition(other.sprite.x, other.sprite.y - 45);
+
+                    const dist = Phaser.Math.Distance.Between(other.sprite.x, other.sprite.y, other.targetX, other.targetY);
+                    if (dist > 2) other.sprite.y += Math.sin(this.time.now / 50) * 0.5;
+                }
+            }
+
+            // 그래픽 생성 함수들
+            createFloorTexture() {
+                const bgGraphics = this.make.graphics({ x: 0, y: 0, add: false });
+                bgGraphics.fillStyle(0x333344, 1); bgGraphics.fillRect(0, 0, 64, 64);
+                bgGraphics.lineStyle(2, 0x222233, 1); bgGraphics.strokeRect(0, 0, 64, 64);
+                bgGraphics.generateTexture('floor', 64, 64);
+            }
+
+            createCrewmateTexture(key, color) {
+                const charGraphics = this.make.graphics({ x: 0, y: 0, add: false });
+                charGraphics.fillStyle(0x000000, 0.3); charGraphics.fillEllipse(30, 58, 40, 10);
+                charGraphics.fillStyle(color, 1); charGraphics.fillRoundedRect(5, 15, 15, 30, 5);
+                charGraphics.lineStyle(3, 0x000000, 1); charGraphics.strokeRoundedRect(5, 15, 15, 30, 5);
+                charGraphics.fillStyle(color, 1); charGraphics.fillRoundedRect(15, 5, 35, 50, 15);
+                charGraphics.lineStyle(3, 0x000000, 1); charGraphics.strokeRoundedRect(15, 5, 35, 50, 15);
+                charGraphics.fillStyle(0x87CEFA, 1); charGraphics.fillRoundedRect(28, 15, 25, 15, 7);
+                charGraphics.lineStyle(3, 0x000000, 1); charGraphics.strokeRoundedRect(28, 15, 25, 15, 7);
+                charGraphics.fillStyle(0xffffff, 0.6); charGraphics.fillEllipse(42, 20, 10, 4);
+                charGraphics.generateTexture(key, 60, 65);
+            }
+        }
+
+        // 게임 부팅 설정 (두 씬 모두 포함)
+        function startGame() {
+            const config = {
+                type: Phaser.AUTO,
+                scale: { mode: Phaser.Scale.RESIZE, parent: 'game-container', width: '100%', height: '100%' },
+                backgroundColor: '#111111',
+                physics: { default: 'arcade', arcade: { gravity: { y: 0 } } },
+                scene: [LobbyScene, UIScene], // 씬을 배열로 등록
+                pixelArt: false
+            };
+            new Phaser.Game(config);
+        }
+    </script>
+</body>
+
+</html>
